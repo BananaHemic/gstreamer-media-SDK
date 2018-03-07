@@ -99,6 +99,9 @@ struct _GstMfxWindowWaylandPrivate
   guint fullscreen_on_show:1;
   guint sync_failed:1;
   volatile guint num_frames_pending;
+
+  gboolean keep_aspect;
+  GstMfxRectangle dst_rect;
 };
 
 /**
@@ -116,6 +119,36 @@ struct _GstMfxWindowWayland
 
 G_DEFINE_TYPE (GstMfxWindowWayland, gst_mfx_window_wayland,
     GST_TYPE_MFX_WINDOW);
+
+static void
+set_render_rectangle (GstMfxWindow * window, guint width, guint height)
+{
+  GstMfxWindowWaylandPrivate *const priv =
+      GST_MFX_WINDOW_WAYLAND_GET_PRIVATE (window);
+
+  if (priv->keep_aspect) {
+    gdouble src_ratio = (gdouble) priv->dst_rect.width / priv->dst_rect.height;
+    gdouble window_ratio = (gdouble) width / height;
+
+    if (src_ratio > window_ratio) {
+      priv->dst_rect.width = width;
+      priv->dst_rect.height = height * window_ratio / src_ratio;
+      priv->dst_rect.x = 0;
+      priv->dst_rect.y = (height - priv->dst_rect.height) / 2;
+
+    } else if (src_ratio < window_ratio) {
+      priv->dst_rect.width = width * src_ratio / window_ratio;
+      priv->dst_rect.height = height;
+      priv->dst_rect.x = (width - priv->dst_rect.width) / 2;
+      priv->dst_rect.y = 0;
+    } else {
+      priv->dst_rect.x = 0;
+      priv->dst_rect.y = 0;
+      priv->dst_rect.width = width;
+      priv->dst_rect.height = height;
+    }
+  }
+}
 
 static inline gboolean
 frame_done (FrameState * frame)
@@ -227,6 +260,7 @@ gst_mfx_window_wayland_render (GstMfxWindow * window,
 {
   GstMfxWindowWaylandPrivate *const priv =
       GST_MFX_WINDOW_WAYLAND_GET_PRIVATE (window);
+  GstMfxWindowPrivate *const priv2 = GST_MFX_WINDOW_GET_PRIVATE (window);
   GstMfxDisplayWaylandPrivate *const display_priv =
       GST_MFX_DISPLAY_WAYLAND_GET_PRIVATE (priv->display);
   struct wl_display *const display = GST_MFX_DISPLAY_HANDLE (priv->display);
@@ -246,13 +280,22 @@ gst_mfx_window_wayland_render (GstMfxWindow * window,
   vaapi_image = gst_mfx_prime_buffer_proxy_get_vaapi_image (buffer_proxy);
   num_planes = vaapi_image_get_plane_count (vaapi_image);
 
-  if ((dst_rect->height != src_rect->height)
+  if (!priv->dst_rect.width && !priv->dst_rect.height) {
+    priv->dst_rect = *src_rect;
+    set_render_rectangle (window, priv2->width, priv2->height);
+    if (priv->viewport) {
+      wl_viewport_set_destination (priv->viewport,
+          priv->dst_rect.width, priv->dst_rect.height);
+    }
+  }
+
+  /*if ((dst_rect->height != src_rect->height)
       || (dst_rect->width != src_rect->width)) {
     if (priv->viewport) {
       wl_viewport_set_destination (priv->viewport,
-          dst_rect->width, dst_rect->height);
+          priv2->width, priv2->height);
     }
-  }
+  }*/
 
   for (i = 0; i < num_planes; i++) {
     offsets[i] = vaapi_image_get_offset (vaapi_image, i);
@@ -292,7 +335,8 @@ gst_mfx_window_wayland_render (GstMfxWindow * window,
 
   GST_MFX_DISPLAY_LOCK (priv->display);
   wl_surface_attach (priv->surface, buffer, 0, 0);
-  wl_surface_damage (priv->surface, 0, 0, dst_rect->width, dst_rect->height);
+  wl_surface_damage (priv->surface, priv->dst_rect.x, priv->dst_rect.y,
+      priv->dst_rect.width, priv->dst_rect.height);
 
   if (priv->opaque_region) {
     wl_surface_set_opaque_region (priv->surface, priv->opaque_region);
@@ -341,6 +385,8 @@ static void
 handle_configure (void * data, struct wl_shell_surface * shell_surface,
     uint32_t edges, int32_t width, int32_t height)
 {
+  GstMfxWindow * window = data;
+  gst_mfx_window_set_size (window, width, height);
 }
 
 static void
@@ -415,7 +461,7 @@ gst_mfx_window_wayland_create (GstMfxWindow * window,
       priv->event_queue);
 
   wl_shell_surface_add_listener (priv->shell_surface,
-      &shell_surface_listener, priv);
+      &shell_surface_listener, window);
   wl_shell_surface_set_toplevel (priv->shell_surface);
 
   if (priv_display->scaler) {
@@ -502,6 +548,10 @@ gst_mfx_window_wayland_resize (GstMfxWindow * window, guint width, guint height)
 
   GST_DEBUG ("resize window, new size %ux%u", width, height);
 
+  set_render_rectangle (window, width, height);
+  if (priv->viewport)
+    wl_viewport_set_destination (priv->viewport, width, height);
+
   if (priv->opaque_region)
     wl_region_destroy (priv->opaque_region);
   GST_MFX_DISPLAY_LOCK (priv->display);
@@ -553,7 +603,8 @@ gst_mfx_window_wayland_init (GstMfxWindowWayland * window)
  * Return value: the newly allocated #GstMfxWindow object
  */
 GstMfxWindow *
-gst_mfx_window_wayland_new (GstMfxDisplay * display, guint width, guint height)
+gst_mfx_window_wayland_new (GstMfxDisplay * display, guint width, guint height,
+    gboolean keep_aspect)
 {
   GstMfxWindowWayland *window;
 
@@ -567,6 +618,7 @@ gst_mfx_window_wayland_new (GstMfxDisplay * display, guint width, guint height)
 
   GST_MFX_WINDOW_WAYLAND_GET_PRIVATE (window)->display =
       gst_mfx_display_ref (display);
+  GST_MFX_WINDOW_WAYLAND_GET_PRIVATE (window)->keep_aspect = keep_aspect;
 
   return gst_mfx_window_new_internal (GST_MFX_WINDOW (window),
       NULL, GST_MFX_ID_INVALID, width, height);

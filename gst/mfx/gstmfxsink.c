@@ -375,7 +375,9 @@ static gboolean
 gst_mfxsink_wayland_create_window (GstMfxSink * sink, guint width, guint height)
 {
   g_return_val_if_fail (sink->window == NULL, FALSE);
-  sink->window = gst_mfx_window_wayland_new (sink->display, width, height);
+  sink->window =
+      gst_mfx_window_wayland_new (sink->display, width, height,
+          sink->keep_aspect);
   if (!sink->window)
     return FALSE;
   return TRUE;

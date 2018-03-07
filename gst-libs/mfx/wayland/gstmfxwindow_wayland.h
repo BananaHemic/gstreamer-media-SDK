@@ -35,8 +35,9 @@ G_DECLARE_FINAL_TYPE (GstMfxWindowWayland, gst_mfx_window_wayland, GST_MFX,
   GstMfxWindowWaylandClass))
 #define GST_MFX_WINDOW_WAYLAND(obj) ((GstMfxWindowWayland *)(obj))
 
-GstMfxWindow *gst_mfx_window_wayland_new (GstMfxDisplay * display,
-    guint width, guint height);
+GstMfxWindow *
+gst_mfx_window_wayland_new (GstMfxDisplay * display, guint width, guint height,
+    gboolean keep_aspect);
 
 G_END_DECLS
 #endif /* GST_MFX_WINDOW_WAYLAND_H */
